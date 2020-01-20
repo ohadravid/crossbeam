@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::{self, Thread, ThreadId};
 use std::time::Instant;
+use parking_lot::{Mutex, Condvar};
 
 use crossbeam_utils::Backoff;
 
@@ -30,6 +31,8 @@ struct Inner {
 
     /// Thread id.
     thread_id: ThreadId,
+
+    pair: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl Context {
@@ -72,6 +75,7 @@ impl Context {
                 packet: AtomicUsize::new(0),
                 thread: thread::current(),
                 thread_id: thread::current().id(),
+                pair: Default::default(),
             }),
         }
     }
@@ -163,7 +167,7 @@ impl Context {
                 let now = Instant::now();
 
                 if now < end {
-                    thread::park_timeout(end - now);
+                    self.park(Some(end));
                 } else {
                     // The deadline has been reached. Try aborting select.
                     return match self.try_select(Selected::Aborted) {
@@ -172,15 +176,35 @@ impl Context {
                     };
                 }
             } else {
-                thread::park();
+                self.park(None);
             }
         }
+    }
+
+    fn park(&self, timeout: Option<Instant>) {
+        let &(ref lock, ref cvar) = &*self.inner.pair.clone();
+        let mut started = lock.lock();
+
+        if *started == true {
+            *started = false;
+            return;
+        }
+
+        match timeout {
+            Some(timeout) => {
+                cvar.wait_until(&mut started, timeout);
+            },
+            None => cvar.wait(&mut started),
+        };
     }
 
     /// Unparks the thread this context belongs to.
     #[inline]
     pub fn unpark(&self) {
-        self.inner.thread.unpark();
+        let &(ref lock, ref cvar) = &*self.inner.pair.clone();
+        let mut started = lock.lock();
+        *started = true;
+        cvar.notify_all();
     }
 
     /// Returns the id of the thread this context belongs to.

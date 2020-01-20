@@ -348,6 +348,7 @@
 #![warn(missing_debug_implementations)]
 
 extern crate crossbeam_utils;
+extern crate parking_lot;
 
 mod channel;
 mod context;
